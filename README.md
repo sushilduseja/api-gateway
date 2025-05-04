@@ -1,5 +1,3 @@
-Okay, here is the updated README reflecting the latest code, incorporating dynamic routing with Spring Cloud LoadBalancer and the reactive nature of the application.
-
 # Reactive API Gateway & Service Registry
 
 A Spring Boot-based API Gateway service built on the reactive stack (Spring WebFlux, Project Reactor) that provides dynamic service discovery, routing, and load balancing capabilities using an in-memory service registry.
