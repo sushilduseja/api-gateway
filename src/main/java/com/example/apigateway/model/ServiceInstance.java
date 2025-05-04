@@ -15,5 +15,7 @@ public record ServiceInstance(
     @Pattern(regexp = "^https?://.*", message = "Base URL must start with http:// or https://")
     String baseUrl,
     
+    ServiceStatus status,
+    
     Instant registrationTimestamp
 ) {}

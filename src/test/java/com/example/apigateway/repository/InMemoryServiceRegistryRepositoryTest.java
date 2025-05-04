@@ -1,24 +1,37 @@
 package com.example.apigateway.repository;
 
 import com.example.apigateway.model.ServiceInstance;
+import com.example.apigateway.model.ServiceStatus;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.Logger;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ExtendWith(MockitoExtension.class)
 class InMemoryServiceRegistryRepositoryTest {
-    private final InMemoryServiceRegistryRepository repository = new InMemoryServiceRegistryRepository();
+    
+    private InMemoryServiceRegistryRepository repository;
+    private static final Instant FIXED_TIME = Instant.parse("2025-05-03T10:15:30Z");
+    
+    @Mock
+    private Logger mockLogger;
+
+    @BeforeEach
+    void setUp() {
+        repository = new InMemoryServiceRegistryRepository();
+    }
 
     @Test
     void shouldRegisterAndRetrieveService() {
         // Given
-        var instance = new ServiceInstance(
-            "test-service",
-            "instance-1",
-            "http://localhost:8080",
-            Instant.now()
-        );
+        var instance = createTestInstance("test-service", "instance-1", ServiceStatus.UP);
 
         // When
         repository.register(instance);
@@ -26,52 +39,48 @@ class InMemoryServiceRegistryRepositoryTest {
 
         // Then
         assertEquals(1, instances.size());
-        assertTrue(instances.contains(instance));
+        var registeredInstance = instances.iterator().next();
+        assertEquals("test-service", registeredInstance.serviceName());
+        assertEquals("instance-1", registeredInstance.instanceId());
+        assertEquals("http://localhost:8080", registeredInstance.baseUrl());
+        assertEquals(ServiceStatus.UP, registeredInstance.status());
     }
 
     @Test
-    void shouldRetrieveServicesByName() {
+    void shouldUpdateInstanceStatus() {
         // Given
-        var instance1 = new ServiceInstance(
-            "service-1",
-            "instance-1",
-            "http://localhost:8081",
-            Instant.now()
-        );
-        var instance2 = new ServiceInstance(
-            "service-1",
-            "instance-2",
-            "http://localhost:8082",
-            Instant.now()
-        );
-        var instance3 = new ServiceInstance(
-            "service-2",
-            "instance-1",
-            "http://localhost:9081",
-            Instant.now()
-        );
+        var instance = createTestInstance("test-service", "instance-1", ServiceStatus.UP);
+        repository.register(instance);
 
         // When
-        repository.register(instance1);
-        repository.register(instance2);
-        repository.register(instance3);
+        boolean updated = repository.updateStatus("test-service", "instance-1", ServiceStatus.DOWN);
 
         // Then
-        var service1Instances = repository.getInstancesByService("service-1");
-        assertEquals(2, service1Instances.size());
-        assertTrue(service1Instances.contains(instance1));
-        assertTrue(service1Instances.contains(instance2));
+        assertTrue(updated);
+        var updatedInstance = repository.getInstance("test-service", "instance-1");
+        assertNotNull(updatedInstance);
+        assertEquals(ServiceStatus.DOWN, updatedInstance.status());
     }
 
     @Test
-    void shouldDeregisterService() {
+    void shouldReturnOnlyUpInstances() {
         // Given
-        var instance = new ServiceInstance(
-            "test-service",
-            "instance-1",
-            "http://localhost:8080",
-            Instant.now()
-        );
+        repository.register(createTestInstance("service-1", "instance-1", ServiceStatus.UP));
+        repository.register(createTestInstance("service-1", "instance-2", ServiceStatus.DOWN));
+        repository.register(createTestInstance("service-1", "instance-3", ServiceStatus.UP));
+
+        // When
+        List<ServiceInstance> upInstances = repository.getUpInstancesByService("service-1");
+
+        // Then
+        assertEquals(2, upInstances.size());
+        assertTrue(upInstances.stream().allMatch(instance -> instance.status() == ServiceStatus.UP));
+    }
+
+    @Test
+    void shouldDeregisterInstance() {
+        // Given
+        var instance = createTestInstance("test-service", "instance-1", ServiceStatus.UP);
         repository.register(instance);
 
         // When
@@ -83,8 +92,30 @@ class InMemoryServiceRegistryRepositoryTest {
     }
 
     @Test
-    void deregisterShouldReturnFalseWhenServiceNotFound() {
-        boolean removed = repository.deregister("unknown", "unknown");
-        assertFalse(removed);
+    void shouldNotUpdateStatusOfNonexistentInstance() {
+        // When
+        boolean updated = repository.updateStatus("unknown", "unknown", ServiceStatus.DOWN);
+
+        // Then
+        assertFalse(updated);
+    }
+
+    @Test
+    void shouldReturnEmptyListForUnknownService() {
+        // When
+        var instances = repository.getInstancesByService("unknown-service");
+
+        // Then
+        assertTrue(instances.isEmpty());
+    }
+
+    private ServiceInstance createTestInstance(String serviceName, String instanceId, ServiceStatus status) {
+        return new ServiceInstance(
+            serviceName,
+            instanceId,
+            "http://localhost:8080",
+            status,
+            FIXED_TIME
+        );
     }
 }

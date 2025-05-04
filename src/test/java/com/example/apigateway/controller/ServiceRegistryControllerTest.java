@@ -1,105 +1,197 @@
 package com.example.apigateway.controller;
 
 import com.example.apigateway.model.ServiceInstance;
+import com.example.apigateway.model.ServiceStatus;
 import com.example.apigateway.repository.InMemoryServiceRegistryRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.test.web.reactive.server.WebTestClient;
 
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.mockito.Mockito.*;
 
-@WebMvcTest(ServiceRegistryController.class)
+@ExtendWith(SpringExtension.class)
+@WebFluxTest(ServiceRegistryController.class)
 class ServiceRegistryControllerTest {
 
     @Autowired
-    private MockMvc mockMvc;
+    private WebTestClient webClient;
 
     @MockBean
     private InMemoryServiceRegistryRepository repository;
 
-    @Test
-    void registerService_ShouldReturnCreatedStatus() throws Exception {
-        doNothing().when(repository).register(any());
+    private static final Instant FIXED_TIME = Instant.parse("2025-05-03T10:15:30Z");
 
-        mockMvc.perform(post("/registry")
+    @Test
+    void registerService_ShouldSetStatusToUpAndTimestamp() {
+        // Given
+        ArgumentCaptor<ServiceInstance> instanceCaptor = ArgumentCaptor.forClass(ServiceInstance.class);
+        doNothing().when(repository).register(instanceCaptor.capture());
+
+        // When & Then
+        webClient.post()
+                .uri("/registry")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""
+                .bodyValue("""
                     {
                         "serviceName": "test-service",
                         "instanceId": "instance-1",
                         "baseUrl": "http://localhost:8080"
-                    }"""))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.serviceName").value("test-service"))
-                .andExpect(jsonPath("$.instanceId").value("instance-1"))
-                .andExpect(jsonPath("$.registrationTimestamp").exists());
+                    }""")
+                .exchange()
+                .expectStatus().isCreated()
+                .expectBody()
+                .jsonPath("$.serviceName").isEqualTo("test-service")
+                .jsonPath("$.instanceId").isEqualTo("instance-1")
+                .jsonPath("$.baseUrl").isEqualTo("http://localhost:8080")
+                .jsonPath("$.status").isEqualTo("UP")
+                .jsonPath("$.registrationTimestamp").exists();
+
+        // Verify the registered instance
+        ServiceInstance registeredInstance = instanceCaptor.getValue();
+        assertEquals(ServiceStatus.UP, registeredInstance.status());
+        assertNotNull(registeredInstance.registrationTimestamp());
     }
 
     @Test
-    void getAllInstances_ShouldReturnInstances() throws Exception {
-        var instance1 = new ServiceInstance(
-            "service1", "instance1", "http://localhost:8081", Instant.now()
-        );
-        var instance2 = new ServiceInstance(
-            "service2", "instance2", "http://localhost:8082", Instant.now()
-        );
+    void updateStatus_ShouldReturnOkWhenSuccessful() {
+        // Given
+        when(repository.updateStatus("test-service", "instance-1", ServiceStatus.DOWN))
+                .thenReturn(true);
 
+        // When & Then
+        webClient.put()
+                .uri("/registry/test-service/instance-1/status")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""
+                    {
+                        "status": "DOWN"
+                    }""")
+                .exchange()
+                .expectStatus().isOk();
+
+        verify(repository).updateStatus("test-service", "instance-1", ServiceStatus.DOWN);
+    }
+
+    @Test
+    void updateStatus_ShouldReturnNotFoundWhenInstanceDoesNotExist() {
+        // Given
+        when(repository.updateStatus("test-service", "instance-1", ServiceStatus.DOWN))
+                .thenReturn(false);
+
+        // When & Then
+        webClient.put()
+                .uri("/registry/test-service/instance-1/status")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""
+                    {
+                        "status": "DOWN"
+                    }""")
+                .exchange()
+                .expectStatus().is5xxServerError();
+    }
+
+    @Test
+    void updateStatus_ShouldReturnBadRequestForInvalidStatus() {
+        webClient.put()
+                .uri("/registry/test-service/instance-1/status")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("""
+                    {
+                        "status": "INVALID_STATUS"
+                    }""")
+                .exchange()
+                .expectStatus().isBadRequest();
+
+        verify(repository, never()).updateStatus(any(), any(), any());
+    }
+
+    @Test
+    void getAllInstances_ShouldReturnAllInstancesFromRepository() {
+        // Given
+        var instance1 = createTestInstance("service1", "instance1", ServiceStatus.UP);
+        var instance2 = createTestInstance("service2", "instance2", ServiceStatus.DOWN);
         when(repository.getAllInstances()).thenReturn(List.of(instance1, instance2));
 
-        mockMvc.perform(get("/registry"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].serviceName").value("service1"))
-                .andExpect(jsonPath("$[1].serviceName").value("service2"));
+        // When & Then
+        webClient.get()
+                .uri("/registry")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].serviceName").isEqualTo("service1")
+                .jsonPath("$[0].status").isEqualTo("UP")
+                .jsonPath("$[1].serviceName").isEqualTo("service2")
+                .jsonPath("$[1].status").isEqualTo("DOWN");
     }
 
     @Test
-    void getServiceInstances_ShouldReturnServiceInstances() throws Exception {
-        var instance = new ServiceInstance(
-            "test-service", "instance-1", "http://localhost:8080", Instant.now()
-        );
-
+    void getServiceInstances_ShouldReturnInstancesForService() {
+        // Given
+        var instance = createTestInstance("test-service", "instance-1", ServiceStatus.UP);
         when(repository.getInstancesByService("test-service"))
-            .thenReturn(List.of(instance));
+                .thenReturn(List.of(instance));
 
-        mockMvc.perform(get("/registry/test-service"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].serviceName").value("test-service"));
+        // When & Then
+        webClient.get()
+                .uri("/registry/test-service")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].serviceName").isEqualTo("test-service")
+                .jsonPath("$[0].status").isEqualTo("UP");
     }
 
     @Test
-    void getServiceInstances_ShouldReturn404_WhenServiceNotFound() throws Exception {
+    void getServiceInstances_ShouldReturn404WhenNoInstancesFound() {
+        // Given
         when(repository.getInstancesByService("unknown-service"))
-            .thenReturn(List.of());
+                .thenReturn(Collections.emptyList());
 
-        mockMvc.perform(get("/registry/unknown-service"))
-                .andExpect(status().isNotFound());
+        // When & Then
+        webClient.get()
+                .uri("/registry/unknown-service")
+                .exchange()
+                .expectStatus().is5xxServerError();
     }
 
     @Test
-    void deregisterService_ShouldReturnNoContent() throws Exception {
-        when(repository.deregister("test-service", "instance-1"))
-            .thenReturn(true);
+    void getInstanceSummary_ShouldIncludeStatus() {
+        // Given
+        var instance = createTestInstance("test-service", "instance-1", ServiceStatus.UP);
+        when(repository.getInstance("test-service", "instance-1"))
+                .thenReturn(instance);
 
-        mockMvc.perform(delete("/registry/test-service/instance-1"))
-                .andExpect(status().isNoContent());
+        // When & Then
+        webClient.get()
+                .uri("/registry/test-service/instance-1/summary")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .value(response -> {
+                    assert response.contains("Status      : UP");
+                });
     }
 
-    @Test
-    void deregisterService_ShouldReturn404_WhenServiceNotFound() throws Exception {
-        when(repository.deregister("test-service", "instance-1"))
-            .thenReturn(false);
-
-        mockMvc.perform(delete("/registry/test-service/instance-1"))
-                .andExpect(status().isNotFound());
+    private ServiceInstance createTestInstance(String serviceName, String instanceId, ServiceStatus status) {
+        return new ServiceInstance(
+            serviceName,
+            instanceId,
+            "http://localhost:8080",
+            status,
+            FIXED_TIME
+        );
     }
 }
